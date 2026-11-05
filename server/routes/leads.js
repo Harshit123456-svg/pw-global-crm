@@ -32,9 +32,9 @@ router.get('/pipeline-counts', requireAuth, (req, res) => {
   let baseWhere = '1=1';
   let params = [];
 
-  // Counsellors see counts for their own pipeline only; Admin sees ALL team leads
+  // Counsellors see counts for their own assigned pipeline ONLY; Admin sees ALL team leads
   if (!isAdmin) {
-    baseWhere += ' AND (assigned_user_id = ? OR assigned_user_id IS NULL)';
+    baseWhere += ' AND assigned_user_id = ?';
     params.push(userId);
   }
 
@@ -127,10 +127,10 @@ router.get('/', requireAuth, (req, res) => {
   const params = [];
 
   // Role constraint:
-  // - Counsellor sees ONLY their assigned leads (or unassigned if any)
+  // - Counsellor sees ONLY their assigned leads. Unassigned leads are visible to Admin ONLY.
   // - Admin sees ALL leads from ALL counsellors unless explicitly filtering by counsellor_id
   if (!isAdmin) {
-    query += ' AND (l.assigned_user_id = ? OR l.assigned_user_id IS NULL)';
+    query += ' AND l.assigned_user_id = ?';
     params.push(userId);
   } else if (counsellor_id) {
     if (counsellor_id === 'unassigned') {
@@ -206,8 +206,8 @@ router.get('/:id', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
-  // Counsellors can only view assigned or unassigned leads
-  if (req.user.role !== 'admin' && lead.assigned_user_id && lead.assigned_user_id !== req.user.id) {
+  // Counsellors can only view their own assigned leads. Unassigned leads are Admin-only.
+  if (req.user.role !== 'admin' && lead.assigned_user_id !== req.user.id) {
     return res.status(403).json({ error: 'You do not have permission to view this lead' });
   }
 
@@ -291,8 +291,8 @@ router.put('/:id', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
-  // Counsellors can only update leads assigned to them
-  if (!isAdmin && existing.assigned_user_id && existing.assigned_user_id !== req.user.id) {
+  // Counsellors can only update leads strictly assigned to them
+  if (!isAdmin && existing.assigned_user_id !== req.user.id) {
     return res.status(403).json({ error: 'Forbidden. You can only update your own assigned leads.' });
   }
 
@@ -378,8 +378,8 @@ router.put('/:id/stage', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
-  // Counsellors can only update their own leads
-  if (req.user.role !== 'admin' && existing.assigned_user_id && existing.assigned_user_id !== req.user.id) {
+  // Counsellors can only update their own assigned leads
+  if (req.user.role !== 'admin' && existing.assigned_user_id !== req.user.id) {
     return res.status(403).json({ error: 'You do not have permission to update this lead' });
   }
 
@@ -426,8 +426,8 @@ router.put('/:id/notes', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
-  // Counsellors can only add notes to their own leads
-  if (req.user.role !== 'admin' && existing.assigned_user_id && existing.assigned_user_id !== req.user.id) {
+  // Counsellors can only add notes to their own assigned leads
+  if (req.user.role !== 'admin' && existing.assigned_user_id !== req.user.id) {
     return res.status(403).json({ error: 'You do not have permission to update notes on this lead' });
   }
 
@@ -472,7 +472,7 @@ router.put('/:id/book-demo', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
-  if (req.user.role !== 'admin' && existing.assigned_user_id && existing.assigned_user_id !== req.user.id) {
+  if (req.user.role !== 'admin' && existing.assigned_user_id !== req.user.id) {
     return res.status(403).json({ error: 'You do not have permission to book a session on this lead' });
   }
 
@@ -519,7 +519,7 @@ router.put('/:id/follow-up', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
-  if (req.user.role !== 'admin' && existing.assigned_user_id && existing.assigned_user_id !== req.user.id) {
+  if (req.user.role !== 'admin' && existing.assigned_user_id !== req.user.id) {
     return res.status(403).json({ error: 'You do not have permission to schedule follow-ups on this lead' });
   }
 
@@ -541,9 +541,13 @@ router.put('/:id/follow-up', requireAuth, (req, res) => {
 // PUT /api/leads/:id/star (Toggle important)
 router.put('/:id/star', requireAuth, (req, res) => {
   const leadId = req.params.id;
-  const lead = db.prepare('SELECT id, is_important FROM leads WHERE id = ?').get(leadId);
+  const lead = db.prepare('SELECT id, assigned_user_id, is_important FROM leads WHERE id = ?').get(leadId);
   if (!lead) {
     return res.status(404).json({ error: 'Lead not found' });
+  }
+
+  if (req.user.role !== 'admin' && lead.assigned_user_id !== req.user.id) {
+    return res.status(403).json({ error: 'You do not have permission to star this lead' });
   }
 
   const newStatus = lead.is_important ? 0 : 1;

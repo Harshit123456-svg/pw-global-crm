@@ -35,6 +35,10 @@ router.post('/generate-link', requireAuth, (req, res) => {
     return res.status(404).json({ error: 'Lead not found' });
   }
 
+  if (req.user.role !== 'admin' && lead.assigned_user_id !== req.user.id) {
+    return res.status(403).json({ error: 'You do not have permission to message this lead' });
+  }
+
   const counsellor = db.prepare('SELECT id, name, phone, email FROM users WHERE id = ?').get(req.user.id);
 
   let message = '';
