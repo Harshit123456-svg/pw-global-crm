@@ -61,8 +61,8 @@ router.post('/', requireAdmin, (req, res) => {
   res.status(201).json({ user: newUser, message: `Team member ${newUser.name} created successfully!` });
 });
 
-// POST /api/users/:id/regenerate-link (Regenerate unique invite token)
-router.post('/:id/regenerate-link', requireAdmin, (req, res) => {
+// POST /api/users/:id/regenerate-link or /regenerate-token (Regenerate unique invite token)
+const handleRegenerateToken = (req, res) => {
   const userId = req.params.id;
   const user = db.prepare('SELECT id, name FROM users WHERE id = ?').get(userId);
   if (!user) {
@@ -73,7 +73,10 @@ router.post('/:id/regenerate-link', requireAdmin, (req, res) => {
   db.prepare(`UPDATE users SET invite_token = ?, updated_at = datetime('now') WHERE id = ?`).run(newToken, userId);
 
   res.json({ invite_token: newToken, message: `New unique access link generated for ${user.name}` });
-});
+};
+
+router.post('/:id/regenerate-link', requireAdmin, handleRegenerateToken);
+router.post('/:id/regenerate-token', requireAdmin, handleRegenerateToken);
 
 // PUT /api/users/:id (Admin update user)
 router.put('/:id', requireAdmin, (req, res) => {
