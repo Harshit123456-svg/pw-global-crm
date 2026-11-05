@@ -1,0 +1,29 @@
+{
+  "name": "pw-global-crm",
+  "version": "1.0.0",
+  "description": "Clean, Modern Team CRM with Google Sheets 2-Way Sync & WhatsApp Reminders",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "server": "node server/index.js",
+    "client": "npm run dev --prefix client",
+    "build": "npm run build --prefix client",
+    "dev": "node server/index.js"
+  },
+  "keywords": ["crm", "google-sheets", "lead-management", "whatsapp-reminders"],
+  "author": "PW Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.8.2",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "googleapis": "^144.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3",
+    "papaparse": "^5.5.2"
+  }
+}

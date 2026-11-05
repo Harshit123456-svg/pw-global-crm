@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Production build is included if desired, but can be built on deploy
+# However, client/dist is served by express, so keeping it built or building on deploy
+# client/dist/
+
+# Environment variables
+.env
+.env.local
+
+# Database
+server/crm.db-shm
+server/crm.db-wal
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
