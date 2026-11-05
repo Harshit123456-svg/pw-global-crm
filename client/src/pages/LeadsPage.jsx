@@ -18,10 +18,12 @@ import {
   BookOpen,
   UserCheck,
   ShieldCheck,
-  CheckCircle2
+  CheckCircle2,
+  UploadCloud
 } from 'lucide-react';
 import LeadCard from '../components/LeadCard';
 import LeadTable from '../components/LeadTable';
+import BulkImportModal from '../components/BulkImportModal';
 import StageBadge, { STAGES } from '../components/StageBadge';
 import api from '../services/api';
 
@@ -57,6 +59,7 @@ export default function LeadsPage({
   const [selectedLeadIds, setSelectedLeadIds] = useState([]);
   const [bulkCounsellorId, setBulkCounsellorId] = useState('');
   const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
 
   const fetchFiltersAndCounts = async () => {
     try {
@@ -239,6 +242,18 @@ export default function LeadsPage({
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
+
+          {/* Bulk Import / Sheets (Admin Only) */}
+          {isAdmin && (
+            <button
+              onClick={() => setIsBulkImportOpen(true)}
+              className="px-3.5 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl shadow-xs transition-colors flex items-center gap-1.5"
+              title="Import leads from CSV or paste Google Sheet tab data"
+            >
+              <UploadCloud className="w-4 h-4 text-indigo-600" />
+              <span>Import Leads</span>
+            </button>
+          )}
 
           {/* New Lead */}
           <button
@@ -603,6 +618,17 @@ export default function LeadsPage({
           onAssignCounsellor={handleAssignCounsellor}
         />
       )}
+
+      {/* High-Speed Bulk Import Modal */}
+      <BulkImportModal
+        isOpen={isBulkImportOpen}
+        onClose={() => setIsBulkImportOpen(false)}
+        counsellors={counsellors}
+        onImportSuccess={() => {
+          fetchLeads();
+          fetchFiltersAndCounts();
+        }}
+      />
     </div>
   );
 }

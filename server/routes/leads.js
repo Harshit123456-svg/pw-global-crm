@@ -604,6 +604,98 @@ router.post('/bulk-assign', requireAdmin, (req, res) => {
   res.json({ message: `Successfully assigned ${lead_ids.length} leads to ${userName}` });
 });
 
+// POST /api/leads/bulk-import (ADMIN ONLY - High-speed atomic import of leads from CSV / Table)
+router.post('/bulk-import', requireAdmin, (req, res) => {
+  const { leads, assignment_mode = 'round_robin', assigned_user_id = null, source_name = 'Bulk Upload' } = req.body;
+
+  if (!Array.isArray(leads) || leads.length === 0) {
+    return res.status(400).json({ error: 'leads array is required and must not be empty' });
+  }
+
+  const activeCounsellors = db.prepare("SELECT id, name FROM users WHERE role = 'counsellor' AND status = 'active' ORDER BY id ASC").all();
+  let counsellorIdx = 0;
+
+  const resolveAssignee = () => {
+    if (assignment_mode === 'specific_user' && assigned_user_id) {
+      return assigned_user_id;
+    }
+    if (assignment_mode === 'round_robin' && activeCounsellors.length > 0) {
+      const id = activeCounsellors[counsellorIdx % activeCounsellors.length].id;
+      counsellorIdx++;
+      return id;
+    }
+    return null;
+  };
+
+  let importedCount = 0;
+  let updatedCount = 0;
+
+  const importTx = db.transaction(() => {
+    for (const lead of leads) {
+      const name = (lead.name || lead['Student Name'] || lead['Name'] || '').trim();
+      const phone = (lead.phone || lead['Phone'] || lead['Phone Number'] || lead['Mobile'] || '').trim();
+      if (!name && !phone) continue;
+
+      const alt_phone = (lead.alt_phone || lead['Alternative Number'] || lead['Alt Phone'] || '').trim();
+      const email = (lead.email || lead['Email'] || lead['E-mail'] || '').trim();
+      const student_email = (lead.student_email || lead['Student Email'] || lead['Student E-mail ID'] || '').trim();
+      const parent_email = (lead.parent_email || lead['Parent Email'] || lead['Parent E-mail ID'] || '').trim();
+      const school = (lead.school || lead['School'] || '').trim();
+      const source = (lead.source || lead['Source'] || source_name).trim();
+      const stage = (lead.stage || lead['Current Status'] || lead['Stage'] || 'New Lead').trim();
+      const course = (lead.course_interest || lead['Course'] || lead['Interest'] || 'General Inquiry').trim();
+      const notes = (lead.notes || lead['Notes'] || 'Imported via Bulk Upload').trim();
+
+      // Check existing by phone
+      const existing = phone ? db.prepare('SELECT id FROM leads WHERE phone = ?').get(phone) : null;
+
+      if (existing) {
+        db.prepare(`
+          UPDATE leads 
+          SET name = COALESCE(NULLIF(?, ''), name),
+              alt_phone = COALESCE(NULLIF(?, ''), alt_phone),
+              email = COALESCE(NULLIF(?, ''), email),
+              student_email = COALESCE(NULLIF(?, ''), student_email),
+              parent_email = COALESCE(NULLIF(?, ''), parent_email),
+              school = COALESCE(NULLIF(?, ''), school),
+              course_interest = COALESCE(NULLIF(?, ''), course_interest),
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(name, alt_phone, email, student_email, parent_email, school, course, existing.id);
+        updatedCount++;
+      } else {
+        const ownerId = resolveAssignee();
+        const newId = db.prepare(`
+          INSERT INTO leads (
+            name, phone, alt_phone, email, student_email, parent_email,
+            school, source, course_interest, stage, priority, assigned_user_id, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Normal', ?, ?)
+        `).run(
+          name || 'Anonymous', phone, alt_phone, email, student_email, parent_email,
+          school, source, course, stage, ownerId, notes
+        ).lastInsertRowid;
+
+        db.prepare(`
+          INSERT INTO lead_activities (lead_id, user_id, activity_type, to_stage, notes)
+          VALUES (?, ?, 'created', ?, 'Imported via Bulk Lead Upload')
+        `).run(newId, ownerId, stage);
+
+        importedCount++;
+      }
+    }
+  });
+
+  importTx();
+
+  res.json({
+    success: true,
+    imported: importedCount,
+    updated: updatedCount,
+    total: importedCount + updatedCount,
+    message: `High-speed import completed: ${importedCount} created, ${updatedCount} updated.`
+  });
+});
+
 // DELETE /api/leads/:id (ADMIN ONLY)
 router.delete('/:id', requireAdmin, (req, res) => {
   const leadId = req.params.id;

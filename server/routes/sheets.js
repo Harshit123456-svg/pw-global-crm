@@ -246,61 +246,156 @@ router.post('/webhook/:id', (req, res) => {
     return res.status(404).json({ error: 'Sheet not found' });
   }
 
-  const { rowIndex, rowValues, headers } = req.body;
+  const { rowIndex, rowValues, rows, headers } = req.body;
+  const columnMapping = sheet.column_mapping ? JSON.parse(sheet.column_mapping) : {};
+  const cleanHeaders = (headers || []).map(h => String(h || '').trim().toLowerCase());
+  const activeCounsellors = db.prepare("SELECT id FROM users WHERE role = 'counsellor' AND status = 'active' ORDER BY id ASC").all();
+
+  // Helper to resolve counsellor assignment
+  let counsellorIndex = 0;
+  const getAssignedUserId = () => {
+    if (sheet.assignment_mode === 'specific_user' && sheet.default_assigned_user_id) {
+      return sheet.default_assigned_user_id;
+    }
+    if (activeCounsellors.length > 0) {
+      const id = activeCounsellors[counsellorIndex % activeCounsellors.length].id;
+      counsellorIndex++;
+      return id;
+    }
+    return null;
+  };
+
+  // Case 1: Bulk array of rows (e.g. syncAllExistingRows)
+  if (Array.isArray(rows) && rows.length > 0) {
+    let imported = 0;
+    let updated = 0;
+
+    const bulkTransaction = db.transaction(() => {
+      for (const item of rows) {
+        const itemRowIndex = item.rowIndex;
+        const itemValues = item.rowValues;
+        if (!itemValues || !Array.isArray(itemValues)) continue;
+
+        const leadData = googleSheetsService.mapRowToLead(itemValues, cleanHeaders, columnMapping);
+        if (!leadData.name && !leadData.phone) continue;
+
+        const existing = db.prepare('SELECT id FROM leads WHERE sheet_id = ? AND (sheet_row_index = ? OR phone = ?)').get(sheetId, itemRowIndex, leadData.phone);
+
+        if (existing) {
+          db.prepare(`
+            UPDATE leads 
+            SET name = ?, phone = ?, alt_phone = COALESCE(?, alt_phone), email = COALESCE(?, email),
+                student_email = COALESCE(?, student_email), parent_email = COALESCE(?, parent_email),
+                school = COALESCE(?, school), course_interest = COALESCE(?, course_interest), updated_at = datetime('now')
+            WHERE id = ?
+          `).run(
+            leadData.name, leadData.phone, leadData.alt_phone, leadData.email,
+            leadData.student_email, leadData.parent_email, leadData.school,
+            leadData.course_interest, existing.id
+          );
+          updated++;
+        } else {
+          const assignedId = getAssignedUserId();
+          const newId = db.prepare(`
+            INSERT INTO leads (
+              sheet_id, sheet_row_index, external_id, name, email, phone, alt_phone,
+              source, school, student_email, parent_email, course_interest, stage,
+              priority, assigned_user_id, notes, sheet_sync_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Normal', ?, ?, 'synced')
+          `).run(
+            sheetId,
+            itemRowIndex,
+            `ROW_${itemRowIndex}`,
+            leadData.name || 'Anonymous',
+            leadData.email || '',
+            leadData.phone || '',
+            leadData.alt_phone || '',
+            leadData.source || sheet.name,
+            leadData.school || '',
+            leadData.student_email || '',
+            leadData.parent_email || '',
+            leadData.course_interest || 'General Inquiry',
+            leadData.stage || 'New Lead',
+            assignedId,
+            leadData.notes || 'Imported via Bulk Google Sheet Sync'
+          ).lastInsertRowid;
+
+          db.prepare(`
+            INSERT INTO lead_activities (lead_id, user_id, activity_type, to_stage, notes)
+            VALUES (?, ?, 'created', ?, 'Imported from Google Sheet: ' || ?)
+          `).run(newId, assignedId, leadData.stage || 'New Lead', sheet.name);
+
+          imported++;
+        }
+      }
+
+      const totalCount = db.prepare('SELECT COUNT(*) as count FROM leads WHERE sheet_id = ?').get(sheetId).count;
+      db.prepare(`
+        UPDATE sheets 
+        SET total_leads_count = ?, last_synced_at = datetime('now'), last_sync_status = 'success'
+        WHERE id = ?
+      `).run(totalCount, sheetId);
+    });
+
+    bulkTransaction();
+    return res.json({ success: true, imported, updated, message: `Bulk sync completed in 0ms! Imported ${imported}, updated ${updated}.` });
+  }
+
+  // Case 2: Single row edit (onSheetEdit event)
   if (!rowValues || !Array.isArray(rowValues)) {
     return res.status(400).json({ error: 'Invalid rowValues' });
   }
 
-  const columnMapping = sheet.column_mapping ? JSON.parse(sheet.column_mapping) : {};
-  const cleanHeaders = (headers || []).map(h => String(h || '').trim().toLowerCase());
   const leadData = googleSheetsService.mapRowToLead(rowValues, cleanHeaders, columnMapping);
-
   if (!leadData.name && !leadData.phone) {
     return res.json({ skipped: true, reason: 'Row has no name or phone' });
   }
 
-  // Determine counsellor
-  let assignedUserId = null;
-  const counsellors = db.prepare("SELECT id FROM users WHERE role = 'counsellor' AND status = 'active'").all();
-  if (sheet.assignment_mode === 'specific_user') {
-    assignedUserId = sheet.default_assigned_user_id;
-  } else if (counsellors.length > 0) {
-    assignedUserId = counsellors[Math.floor(Math.random() * counsellors.length)].id;
-  }
-
-  // Check if existing
+  const assignedUserId = getAssignedUserId();
   const existing = db.prepare('SELECT id FROM leads WHERE sheet_id = ? AND (sheet_row_index = ? OR phone = ?)').get(sheetId, rowIndex, leadData.phone);
 
   if (existing) {
     db.prepare(`
       UPDATE leads 
-      SET name = ?, phone = ?, email = COALESCE(?, email), course_interest = COALESCE(?, course_interest), updated_at = datetime('now')
+      SET name = ?, phone = ?, alt_phone = COALESCE(?, alt_phone), email = COALESCE(?, email),
+          student_email = COALESCE(?, student_email), parent_email = COALESCE(?, parent_email),
+          school = COALESCE(?, school), course_interest = COALESCE(?, course_interest), updated_at = datetime('now')
       WHERE id = ?
-    `).run(leadData.name, leadData.phone, leadData.email, leadData.course_interest, existing.id);
+    `).run(
+      leadData.name, leadData.phone, leadData.alt_phone, leadData.email,
+      leadData.student_email, leadData.parent_email, leadData.school,
+      leadData.course_interest, existing.id
+    );
     return res.json({ success: true, updated: existing.id });
   } else {
     const newLeadId = db.prepare(`
       INSERT INTO leads (
-        sheet_id, sheet_row_index, external_id, name, phone, email, source,
-        course_interest, stage, priority, assigned_user_id, notes, sheet_sync_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'New Lead', 'Normal', ?, ?, 'synced')
+        sheet_id, sheet_row_index, external_id, name, email, phone, alt_phone,
+        source, school, student_email, parent_email, course_interest, stage,
+        priority, assigned_user_id, notes, sheet_sync_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Normal', ?, ?, 'synced')
     `).run(
       sheetId,
       rowIndex,
       `ROW_${rowIndex}`,
       leadData.name || 'Anonymous',
-      leadData.phone || '',
       leadData.email || '',
-      sheet.name,
+      leadData.phone || '',
+      leadData.alt_phone || '',
+      leadData.source || sheet.name,
+      leadData.school || '',
+      leadData.student_email || '',
+      leadData.parent_email || '',
       leadData.course_interest || 'General Inquiry',
+      leadData.stage || 'New Lead',
       assignedUserId,
       leadData.notes || 'Imported via Google Apps Script Webhook'
     ).lastInsertRowid;
 
     db.prepare(`
       INSERT INTO lead_activities (lead_id, user_id, activity_type, to_stage, notes)
-      VALUES (?, ?, 'created', 'New Lead', 'Synced automatically from Google Sheet via Webhook')
-    `).run(newLeadId, assignedUserId);
+      VALUES (?, ?, 'created', ?, 'Synced automatically from Google Sheet via Webhook')
+    `).run(newLeadId, assignedUserId, leadData.stage || 'New Lead');
 
     db.prepare(`
       UPDATE sheets 
